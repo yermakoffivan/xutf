@@ -262,7 +262,7 @@ pub fn decode_utf8_3x4(input: Simd<u8, 16>) -> Simd<u16, 4> {
 /// generic `to_bitmask` extracts lanes one by one).
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-fn bitmask64(
+pub(crate) fn bitmask64(
 	m0: core::arch::aarch64::uint8x16_t,
 	m1: core::arch::aarch64::uint8x16_t,
 	m2: core::arch::aarch64::uint8x16_t,

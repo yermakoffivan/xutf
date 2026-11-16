@@ -26,6 +26,7 @@ lto = "thin"
 [dev-dependencies]
 divan = "0.1"
 encoding_rs = "0.8.35"
+memchr = "2.8"
 rayon = "1.10"
 simdutf = "0.7.0"
 strip-ansi = "0.1.0"
@@ -82,6 +83,18 @@ harness = false
 
 [[bench]]
 name = "offset"
+harness = false
+
+[[bench]]
+name = "lines"
+harness = false
+
+[[bench]]
+name = "set"
+harness = false
+
+[[bench]]
+name = "find"
 harness = false
 
 

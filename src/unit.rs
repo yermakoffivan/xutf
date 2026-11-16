@@ -101,6 +101,20 @@ impl_unit!(u8, crate::utf8::Utf8);
 impl_unit!(u16, crate::utf16::Utf16<false>);
 impl_unit!(u32, crate::utf32::Utf32<false>);
 
+/// Reinterprets a generic unit slice as its concrete unit type, for
+/// dispatching on [`Encoding::KIND`](crate::Encoding::KIND) to kernels
+/// written against `u8`/`u16`/`u32`.
+///
+/// # Safety
+/// `T` and `U` must be the same unit type; the sealed `Encoding` maps each
+/// [`Kind`](crate::Kind) to exactly one, so matching on `E::KIND` proves it.
+#[inline(always)]
+pub unsafe fn as_units<T, U>(input: &[T]) -> &[U] {
+	debug_assert_eq!(size_of::<T>(), size_of::<U>());
+	// SAFETY: the caller guarantees `T` and `U` are the same type.
+	unsafe { core::slice::from_raw_parts(input.as_ptr().cast(), input.len()) }
+}
+
 /// Scalar ASCII case fold, mirroring [`Unit::fold_case`] on a single value.
 #[inline(always)]
 pub const fn fold_case_scalar(v: u32, base: u32) -> u32 {

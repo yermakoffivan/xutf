@@ -8,7 +8,7 @@
 use core::{
 	mem::size_of,
 	simd::{
-		Simd,
+		Mask, MaskElement, Simd, SimdElement,
 		cmp::{SimdPartialEq, SimdPartialOrd},
 	},
 };
@@ -25,6 +25,160 @@ pub(crate) const TRANS_WIDE: usize = 64;
 pub(crate) const TRANS_WIDE: usize = 16;
 pub const CMP_WIDE: usize = 16;
 pub const NARROW: usize = 8;
+
+/// Units per block for the bitmask scanners ([`crate::lines`],
+/// [`crate::UnitSet`], [`crate::find`]): one `u64` holds a block's matches.
+pub const BLOCK: usize = 64;
+
+/// Mask of the low `n` bits, `n <= 64`.
+#[inline(always)]
+pub const fn low_bits(n: usize) -> u64 {
+	if n >= BLOCK { !0 } else { (1 << n) - 1 }
+}
+
+/// Bit `i` set when `pred` holds for lane `i` of `block`.
+///
+/// `pred` sees one 16-lane quarter at a time. `AArch64` has no movemask: a
+/// 64-lane mask packed to bits makes LLVM shuffle a 64-lane `i1` vector, which
+/// it scalarizes lane by lane, while 16-lane masks stay one compare per
+/// register and pack with the `vpaddq` reduction of
+/// [`crate::kernel::bitmask64`]. Elsewhere each quarter is a `to_bitmask`
+/// (`pmovmskb` on x86).
+#[inline(always)]
+pub fn bits64<U: SimdElement, M: MaskElement>(
+	block: Simd<U, BLOCK>,
+	pred: impl Fn(Simd<U, 16>) -> Mask<M, 16>,
+) -> u64 {
+	let lanes = block.as_array();
+	let quarter = |k: usize| pred(Simd::from_slice(&lanes[k * 16..]));
+	#[cfg(target_arch = "aarch64")]
+	{
+		use core::arch::aarch64::uint8x16_t;
+
+		let bytes = |k: usize| {
+			// SAFETY: `Simd<i8, 16>` and `uint8x16_t` are both 16 plain bytes.
+			unsafe {
+				core::mem::transmute::<Simd<i8, 16>, uint8x16_t>(quarter(k).cast::<i8>().to_simd())
+			}
+		};
+		crate::kernel::bitmask64(bytes(0), bytes(1), bytes(2), bytes(3))
+	}
+	#[cfg(not(target_arch = "aarch64"))]
+	{
+		(0..4).fold(0, |bits, k| bits | quarter(k).to_bitmask() << (k * 16))
+	}
+}
+
+/// [`bits64`] for 16 lanes: bit `i` set when `pred` holds for lane `i`.
+#[inline(always)]
+fn bits16<U: SimdElement, M: MaskElement>(
+	v: Simd<U, 16>,
+	pred: &impl Fn(Simd<U, 16>) -> Mask<M, 16>,
+) -> u64 {
+	#[cfg(target_arch = "aarch64")]
+	{
+		use core::arch::aarch64::{uint8x16_t, vdupq_n_u8};
+
+		// SAFETY: `Simd<i8, 16>` and `uint8x16_t` are both 16 plain bytes;
+		// AArch64 mandates NEON.
+		unsafe {
+			let bytes =
+				core::mem::transmute::<Simd<i8, 16>, uint8x16_t>(pred(v).cast::<i8>().to_simd());
+			let zero = vdupq_n_u8(0);
+			crate::kernel::bitmask64(bytes, zero, zero, zero)
+		}
+	}
+	#[cfg(not(target_arch = "aarch64"))]
+	{
+		pred(v).to_bitmask()
+	}
+}
+
+/// Up to [`BLOCK`] units that a scanner classifies into one `u64`, bit `i`
+/// for unit `i`; built by [`window`].
+#[derive(Clone, Copy)]
+pub enum Window<'a, U: SimdElement> {
+	/// A whole block.
+	Block(Simd<U, BLOCK>),
+	/// Fewer than [`BLOCK`] units, read 16 lanes at a time with the last read
+	/// overlapping, so neither a padded copy nor an out-of-bounds load is
+	/// needed; bits at or past the end are clear.
+	Short(&'a [U]),
+}
+
+impl<U: SimdElement + Default> Window<'_, U> {
+	/// Bit `i` set when `pred` holds for unit `i`, as [`bits64`] computes it.
+	#[inline(always)]
+	pub fn bits<M: MaskElement>(&self, pred: impl Fn(Simd<U, 16>) -> Mask<M, 16>) -> u64 {
+		match *self {
+			Self::Block(block) => bits64(block, pred),
+			Self::Short(units) => short_bits(units, pred),
+		}
+	}
+
+	/// Whether `pred` holds for any unit; a block ORs its quarters and reduces
+	/// once instead of packing bits.
+	#[inline(always)]
+	pub fn any<M: MaskElement>(&self, pred: impl Fn(Simd<U, 16>) -> Mask<M, 16>) -> bool {
+		match *self {
+			Self::Block(block) => {
+				let lanes = block.as_array();
+				(1..4)
+					.fold(pred(Simd::from_slice(lanes)), |hit, k| {
+						hit | pred(Simd::from_slice(&lanes[k * 16..]))
+					})
+					.any()
+			},
+			Self::Short(_) => self.bits(pred) != 0,
+		}
+	}
+}
+
+/// [`Window::bits`] of a short window, out of line: it runs at most once per
+/// input (the tail), and inlined it would bloat every block loop.
+#[inline(never)]
+fn short_bits<U: SimdElement + Default, M: MaskElement>(
+	units: &[U],
+	pred: impl Fn(Simd<U, 16>) -> Mask<M, 16>,
+) -> u64 {
+	let n = units.len();
+	if n < 16 {
+		let mut padded = [U::default(); 16];
+		padded[..n].copy_from_slice(units);
+		return bits16(Simd::from_array(padded), &pred) & low_bits(n);
+	}
+	let mut bits = 0;
+	let mut at = 0;
+	while at + 16 <= n {
+		bits |= bits16(Simd::from_slice(&units[at..]), &pred) << at;
+		at += 16;
+	}
+	if at < n {
+		// Overlapping lanes repeat bits already set.
+		bits |= bits16(Simd::from_slice(&units[n - 16..]), &pred) << (n - 16);
+	}
+	bits
+}
+
+/// The window holding `data[at..]` (at most [`BLOCK`] units of it), and the
+/// offset of the window's first unit.
+///
+/// A tail shorter than a block is classified as the last whole block when
+/// one exists, so the caller shifts the bits right by `at - origin`;
+/// otherwise the window is [`Window::Short`] and `origin == at`. Requires
+/// `at < data.len()`.
+#[inline(always)]
+pub fn window<U: SimdElement + Default>(data: &[U], at: usize) -> (Window<'_, U>, usize) {
+	let len = data.len();
+	debug_assert!(at < len, "window past the end");
+	if len - at >= BLOCK {
+		(Window::Block(Simd::from_slice(&data[at..])), at)
+	} else if len >= BLOCK {
+		(Window::Block(Simd::from_slice(&data[len - BLOCK..])), len - BLOCK)
+	} else {
+		(Window::Short(&data[at..]), at)
+	}
+}
 
 /// Streams `N`-lane windows of `data[..limit]` through `f(window, offset)`
 /// while they are all-ASCII, returning the length of the leading ASCII run.

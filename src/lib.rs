@@ -28,6 +28,12 @@
 //!   surface of the `unicode-normalization`, `unicode-properties` and
 //!   `unicode-script` crates from one table family, also as [`Ucd`] methods on
 //!   `char`/`u32`.
+//! - **Scanners over 64-unit SIMD blocks**: line splitting with
+//!   [`LineEnds::Lf`], universal, or Python's Unicode line ends ([`lines`],
+//!   [`lines_str`], [`Text::split_lines`]); byte-class search, counting,
+//!   trimming and field splitting over up to eight ranges ([`UnitSet`]); and
+//!   substring search, also ASCII-caseless ([`find`], [`rfind`], [`find_iter`],
+//!   [`find_ignore_ascii_case`]).
 //! - **Validation of byte streams cut anywhere**: [`valid_prefix`] (the valid
 //!   part [`core::str::from_utf8`] reports, 64 bytes at a time with SIMD),
 //!   [`valid_text_prefix`] (stopping at C0 controls and DEL as well),
@@ -75,8 +81,10 @@ mod bytes;
 mod compare;
 mod convert;
 mod encoding;
+mod find;
 mod grapheme;
 mod kernel;
+mod lines;
 mod native;
 mod normalize;
 mod offset;
@@ -84,6 +92,7 @@ mod props;
 #[cfg(test)]
 mod props_tests;
 mod read;
+mod set;
 mod simd;
 mod strip;
 mod tables;
@@ -108,10 +117,15 @@ pub use convert::{
 	AsciiCase, TextBuf, to_string, transcode, transcode_into, transcode_with_case, transcoded_len,
 };
 pub use encoding::{Codepoints, Encoding, Kind, chars, codepoints};
+pub use find::{
+	FindIter, find, find_ignore_ascii_case, find_ignore_ascii_case_str, find_iter,
+	find_iter_ignore_ascii_case, rfind, rfind_ignore_ascii_case, rfind_ignore_ascii_case_str,
+};
 pub use grapheme::{
 	Cluster, Grapheme, GraphemeIndices, Graphemes, StrGraphemeIndices, StrGraphemes,
 	grapheme_indices, grapheme_indices_str, graphemes, graphemes_str,
 };
+pub use lines::{Line, LineEnds, Lines, StrLines, lines, lines_str};
 pub use normalize::{
 	IntoUnicodeNormalized, MakeUnicodeNormalized, NormalizationError, ToUnicodeNormalized,
 	canonical_combining_class, is_nfc, is_nfc_codepoints, is_nfkc, is_nfkc_codepoints,
@@ -119,6 +133,7 @@ pub use normalize::{
 pub use offset::unit_offset;
 pub use props::UNICODE_VERSION;
 pub use read::{BufReadCharsExt, Chars, CharsRaw, ReadCharError, StreamDecode};
+pub use set::{Fields, StrFields, UnitSet};
 pub use simd::plain_prefix;
 pub use strip::{IntoAnsiStripped, MakeAnsiStripped, ToAnsiStripped, width_ansi, width_ansi_str};
 pub use text::Text;

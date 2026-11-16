@@ -14,7 +14,7 @@ use core::{
 
 use crate::{
 	encoding::{Encoding, Kind},
-	unit::Unit,
+	unit::{Unit, as_units},
 	utf8::Utf8,
 	utf16::Utf16,
 	utf32::Utf32,
@@ -180,14 +180,6 @@ fn find_u32<const FOREIGN: bool>(input: &[u32], start: usize) -> usize {
 		}
 		is_introducer(c)
 	})
-}
-
-#[inline(always)]
-unsafe fn as_units<T, U>(input: &[T]) -> &[U] {
-	debug_assert_eq!(size_of::<T>(), size_of::<U>());
-	// SAFETY: callers dispatch from the sealed Encoding::KIND invariant, which
-	// maps each encoding family to exactly one same-sized unsigned unit type.
-	unsafe { core::slice::from_raw_parts(input.as_ptr().cast(), input.len()) }
 }
 
 #[inline(always)]

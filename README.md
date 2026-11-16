@@ -5,7 +5,8 @@
 
 Fast, permissive UTF-8 / UTF-16 / UTF-32 transcoding, comparison and BOM
 detection — plus allocation-free terminal text primitives (graphemes, visible
-width, truncation, word wrap, in-place ANSI stripping).
+width, truncation, word wrap, in-place ANSI stripping) and SIMD scanners
+(line splitting, byte-class search, substring search).
 
 Decoding never fails: truncated sequences, lone surrogates, garbage in →
 defined output out. Safe to point at untrusted bytes.
@@ -48,6 +49,24 @@ roughly 1.5–2× ahead on typical text, and **3–10×** ahead on emoji-heavy i
   printable runs; `Utf8Decoder` takes the rest a byte at a time with
   maximal-subpart replacement. `plain_prefix` measures printable ASCII and
   `wide_run` decodes up to 16 two-cell CJK/Hangul characters at once.
+- **Text scanning in 64-unit SIMD blocks** — each block becomes one `u64` of
+  matches that iterators pop bit by bit, so dense hits never restart a search:
+  - `lines` / `lines_str` / `Text::split_lines` split on `LineEnds::Lf`
+    (`str::lines`), `Universal` (LF, CRLF, CR: Python `bytes.splitlines`), or
+    `Unicode` (Python `str.splitlines`, NEL/LS/PS included). Each `Line` keeps
+    its terminator and offset, and an unterminated final line is flagged for
+    stream readers. 2–3× `memchr_iter` on source, log and CJK lines (~20%
+    behind it on 400-byte prose lines), 7–16× a char loop for the Unicode set
+    on Latin text; `count()` sums UTF-8 line ends in byte lanes, ~30% ahead of
+    `memchr_iter().count()`.
+  - `UnitSet` holds up to 8 byte ranges (whitespace, delimiters, JSON escapes,
+    identifier classes) and finds, counts, trims and splits on them in any
+    encoding: ~6× a scalar loop for `count`, up to 4× on escape scans. A
+    search restarted after every nearby hit trails `memchr3` (1.4–2×), which
+    only handles three bytes.
+  - `find` / `rfind` / `find_iter` search substrings, also
+    ASCII-caseless without lowercasing a copy: on par with `memchr::memmem` on
+    UTF-8 (−28% to +2.7×), 20–35× a naive search on UTF-16.
 - **BOM detection** — decode whatever the BOM says, defaulting to UTF-8.
 - **`#![no_std]`**, zero runtime dependencies, Unicode 17.0 tables generated
   from the UCD.
@@ -351,6 +370,34 @@ let mut units: Vec<u16> = "\x1b[32mgreen\x1b[0m".encode_utf16().collect();
 let mut clean = units.as_mut_slice();
 clean.make_ansi_stripped();
 assert_eq!(String::from_utf16(clean).unwrap(), "green");
+```
+
+Scanning — line splitting, byte-class search and substring search, generic
+over the encoding:
+
+```rust
+use xutf::{LineEnds, Text, UnitSet, Utf8, Utf16};
+
+// Python's `str.splitlines(keepends=True)`, borrowed.
+let kept: Vec<&str> = "a\r\nb\u{2028}c".split_lines(LineEnds::Unicode).map(|l| l.with_end()).collect();
+assert_eq!(kept, ["a\r\n", "b\u{2028}", "c"]);
+
+// A stream reader keeps the unterminated tail for the next read.
+let buf = b"GET /\r\nHost: x\r\npartial";
+let tail = xutf::lines::<Utf8>(buf, LineEnds::Lf).find(|line| line.end().is_empty());
+assert_eq!(tail.map(|line| line.at()), Some(16));
+
+// Byte classes: up to 8 ranges, in any encoding.
+const JSON_ESCAPE: UnitSet = UnitSet::from_ranges(&[0..=0x1f, b'"'..=b'"', b'\\'..=b'\\']);
+assert_eq!(JSON_ESCAPE.find::<Utf8>(b"say \"hi\""), Some(4));
+let words: Vec<_> = UnitSet::ASCII_WHITESPACE.fields_str(" GET  /index ").map(|(_, w)| w).collect();
+assert_eq!(words, ["GET", "/index"]);
+
+// Substring search over UTF-16, and ASCII-caseless without a lowercased copy.
+let wide: Vec<u16> = "日本語のテキスト".encode_utf16().collect();
+let needle: Vec<u16> = "テキ".encode_utf16().collect();
+assert_eq!(xutf::find::<Utf16>(&wide, &needle), Some(4));
+assert_eq!(xutf::find_ignore_ascii_case_str("disk WARN: full", "warn"), Some(5));
 ```
 
 Streaming from readers — chars are decoded in batches from the `BufRead`

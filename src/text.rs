@@ -10,6 +10,7 @@ use crate::{
 		StrGraphemeIndices as StrIndexedGraphemes, StrGraphemes, grapheme_indices,
 		grapheme_indices_str, graphemes, graphemes_str,
 	},
+	lines::{Line, LineEnds, Lines, StrLines, lines, lines_str},
 	offset,
 	truncate::{
 		skip_columns, skip_columns_str, truncate, truncate_measured, truncate_measured_str,
@@ -69,6 +70,10 @@ pub trait Text {
 	type WrappedMeasured<'a>: Iterator<Item = WrappedLine<'a, Self::Encoding>> + Clone
 	where
 		Self: 'a;
+	/// Iterator returned by [`Text::split_lines`].
+	type Lines<'a>: Iterator<Item = Line<'a, Self>> + Clone
+	where
+		Self: 'a;
 
 	/// Iterates extended grapheme clusters from either end (see
 	/// [`graphemes`]).
@@ -98,6 +103,9 @@ pub trait Text {
 	/// Greedily wraps while reporting each subline's code-unit offset and
 	/// visible width (see [`wrap_measured`]).
 	fn wrap_measured(&self, max_width: usize) -> Self::WrappedMeasured<'_>;
+	/// Splits into lines ending at `ends`, each with its terminator and
+	/// offset (see [`lines`]).
+	fn split_lines(&self, ends: LineEnds) -> Self::Lines<'_>;
 
 	/// Raw code units backing this text.
 	fn as_units(&self) -> &[<Self::Encoding as Encoding>::Unit];
@@ -167,6 +175,7 @@ impl Text for str {
 	type Encoding = Utf8;
 	type GraphemeIndices<'a> = StrIndexedGraphemes<'a>;
 	type Graphemes<'a> = StrGraphemes<'a>;
+	type Lines<'a> = StrLines<'a>;
 	type Wrapped<'a> = StrWrapped<'a>;
 	type WrappedMeasured<'a> = MeasuredWrapped<'a, Utf8>;
 
@@ -221,6 +230,11 @@ impl Text for str {
 	}
 
 	#[inline]
+	fn split_lines(&self, ends: LineEnds) -> StrLines<'_> {
+		lines_str(self, ends)
+	}
+
+	#[inline]
 	fn as_units(&self) -> &[u8] {
 		self.as_bytes()
 	}
@@ -233,6 +247,7 @@ macro_rules! impl_text_for_units {
 			type Encoding = $encoding;
 			type GraphemeIndices<'a> = IndexedGraphemes<'a, $encoding>;
 			type Graphemes<'a> = Graphemes<'a, $encoding>;
+			type Lines<'a> = Lines<'a, $encoding>;
 			type Wrapped<'a> = Wrapped<'a, $encoding>;
 			type WrappedMeasured<'a> = MeasuredWrapped<'a, $encoding>;
 
@@ -284,6 +299,11 @@ macro_rules! impl_text_for_units {
 			#[inline]
 			fn wrap_measured(&self, max_width: usize) -> Self::WrappedMeasured<'_> {
 				wrap_measured::<$encoding>(self, max_width)
+			}
+
+			#[inline]
+			fn split_lines(&self, ends: LineEnds) -> Lines<'_, $encoding> {
+				lines::<$encoding>(self, ends)
 			}
 
 			#[inline]
